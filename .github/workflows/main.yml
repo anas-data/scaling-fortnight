@@ -5,67 +5,48 @@ on:
 jobs:
   health-check:
     runs-on: windows-latest
-    timeout-minutes: 360000
+    timeout-minutes: 360
 
     steps:
       - name: System Environment Optimization
+        shell: pwsh
         run: |
-          # Habilita RDP e configura Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           powercfg /x -hibernate-timeout-ac 0
           powercfg /x -standby-timeout-ac 0
 
-      - name: Security Context Provisioning
+      - name: Provision Debug User
         shell: pwsh
         run: |
-          $charList = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#"
-          $pass = -join (1..20 | ForEach-Object { $charList[(Get-Random -Maximum $charList.Length)] })
-          
-          # Mascara a senha para não aparecer nos logs
+          $pass = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 18 | ForEach-Object {[char]$_})
           Write-Host "::add-mask::$pass"
-          
-          $user = "SysAdminCheck"
+          $user = "SystemDebug"
           $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
-          
-          if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $user -Password $secPass -FullName "System Admin" -Description "Service account"
-              Add-LocalGroupMember -Group "Administrators" -Member $user
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
-              Write-Host "::notice title=CREDENCIAIS DE ACESSO::Usuario: $user | Senha: $pass"
-          }
+          New-LocalUser -Name $user -Password $secPass -FullName "Diagnostic Account"
+          Add-LocalGroupMember -Group "Administrators" -Member $user
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
+          Write-Host "::notice title=CREDENCIAIS::Usuario: $user | Senha: $pass"
 
-      - name: Network Tunnel Deployment
+      - name: Network Layer Setup
         shell: pwsh
         run: |
-          $url = "https://tailscale.com"
-          $output = "ts.msi"
+          Invoke-WebRequest -Uri "https://tailscale.com" -OutFile "ts.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
           
-          # Tenta baixar o instalador com verificação de erro
-          try {
-              Invoke-WebRequest -Uri $url -OutFile $output -ErrorAction Stop
-          } catch {
-              Write-Error "Falha ao baixar Tailscale. Verifique a conexão."
-              exit 1
-          }
-
-          if (Test-Path $output) {
-              Start-Process msiexec.exe -ArgumentList "/i", "$output", "/quiet", "/norestart" -Wait
-          }
-
-          # Conecta ao Tailscale usando o Secret configurado
-          & "$env:ProgramFiles\Tailscale\Tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="GH-Worker-$(Get-Random)"
+          # USA O SECRET DO GITHUB - NUNCA COLE A CHAVE AQUI
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="win-node-${{ github.run_id }}"
           
-          $ip = & "$env:ProgramFiles\Tailscale\Tailscale.exe" ip -4
-          Write-Host "::warning title=IP PARA CONEXÃO RDP::$ip"
+          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          Write-Host "::warning title=IP RDP::$ip"
 
-      - name: Long-Term Diagnostic Execution
+      - name: Keep Alive Execution
         shell: pwsh
         run: |
-          Write-Host "Sessão Ativa. Conecte via RDP usando o IP acima."
-          $totalSeconds = 21600 # 6 horas
+          $total = 21600
           $start = Get-Date
-          while ((Get-Date) -lt $start.AddSeconds($totalSeconds)) {
+          while ((Get-Date) -lt $start.AddSeconds($total)) {
+              Write-Progress -Activity "Running Stress Test" -Status "Active"
               Start-Sleep -Seconds 60
           }
