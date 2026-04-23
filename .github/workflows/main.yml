@@ -5,17 +5,15 @@ on:
 jobs:
   health-check:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 360000
 
     steps:
       - name: System Environment Optimization
         run: |
-          # Habilita RDP e configura Firewall de forma silenciosa
+          # Habilita RDP e configura Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
-          # Impede o sistema de entrar em idle/sleep
           powercfg /x -hibernate-timeout-ac 0
           powercfg /x -standby-timeout-ac 0
 
@@ -25,38 +23,49 @@ jobs:
           $charList = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#"
           $pass = -join (1..20 | ForEach-Object { $charList[(Get-Random -Maximum $charList.Length)] })
           
-          # Mascara a senha nos logs do GitHub
+          # Mascara a senha para não aparecer nos logs
           Write-Host "::add-mask::$pass"
           
           $user = "SysAdminCheck"
           $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
           
           if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $user -Password $secPass -FullName "System Admin" -Description "Service account for diagnostics"
+              New-LocalUser -Name $user -Password $secPass -FullName "System Admin" -Description "Service account"
               Add-LocalGroupMember -Group "Administrators" -Member $user
               Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
-              Write-Host "::notice title=Deployment Info::User: $user | Pass: $pass"
+              Write-Host "::notice title=CREDENCIAIS DE ACESSO::Usuario: $user | Senha: $pass"
           }
 
       - name: Network Tunnel Deployment
+        shell: pwsh
         run: |
-          # Baixa sempre a versão mais recente para evitar flags de segurança
-          Invoke-WebRequest -Uri "https://tailscale.com" -OutFile "ts.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
+          $url = "https://tailscale.com"
+          $output = "ts.msi"
           
-          # Inicializa o Tailscale (Certifique-se de ter o SECRET configurado)
+          # Tenta baixar o instalador com verificação de erro
+          try {
+              Invoke-WebRequest -Uri $url -OutFile $output -ErrorAction Stop
+          } catch {
+              Write-Error "Falha ao baixar Tailscale. Verifique a conexão."
+              exit 1
+          }
+
+          if (Test-Path $output) {
+              Start-Process msiexec.exe -ArgumentList "/i", "$output", "/quiet", "/norestart" -Wait
+          }
+
+          # Conecta ao Tailscale usando o Secret configurado
           & "$env:ProgramFiles\Tailscale\Tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="GH-Worker-$(Get-Random)"
           
           $ip = & "$env:ProgramFiles\Tailscale\Tailscale.exe" ip -4
-          Write-Host "::warning title=Remote Access IP::$ip"
+          Write-Host "::warning title=IP PARA CONEXÃO RDP::$ip"
 
       - name: Long-Term Diagnostic Execution
         shell: pwsh
         run: |
+          Write-Host "Sessão Ativa. Conecte via RDP usando o IP acima."
           $totalSeconds = 21600 # 6 horas
           $start = Get-Date
           while ((Get-Date) -lt $start.AddSeconds($totalSeconds)) {
-              $remaining = ($start.AddSeconds($totalSeconds) - (Get-Date)).ToString("hh\:mm\:ss")
-              Write-Progress -Activity "Executing System Stress Test" -Status "Time Remaining: $remaining"
-              Start-Sleep -Seconds 120
+              Start-Sleep -Seconds 60
           }
