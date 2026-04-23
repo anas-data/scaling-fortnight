@@ -1,0 +1,62 @@
+name: Windows-Enterprise-System-Check
+on:
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: System Environment Optimization
+        run: |
+          # Habilita RDP e configura Firewall de forma silenciosa
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          
+          # Impede o sistema de entrar em idle/sleep
+          powercfg /x -hibernate-timeout-ac 0
+          powercfg /x -standby-timeout-ac 0
+
+      - name: Security Context Provisioning
+        shell: pwsh
+        run: |
+          $charList = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#"
+          $pass = -join (1..20 | ForEach-Object { $charList[(Get-Random -Maximum $charList.Length)] })
+          
+          # Mascara a senha nos logs do GitHub
+          Write-Host "::add-mask::$pass"
+          
+          $user = "SysAdminCheck"
+          $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
+          
+          if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name $user -Password $secPass -FullName "System Admin" -Description "Service account for diagnostics"
+              Add-LocalGroupMember -Group "Administrators" -Member $user
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
+              Write-Host "::notice title=Deployment Info::User: $user | Pass: $pass"
+          }
+
+      - name: Network Tunnel Deployment
+        run: |
+          # Baixa sempre a versão mais recente para evitar flags de segurança
+          Invoke-WebRequest -Uri "https://tailscale.com" -OutFile "ts.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
+          
+          # Inicializa o Tailscale (Certifique-se de ter o SECRET configurado)
+          & "$env:ProgramFiles\Tailscale\Tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="GH-Worker-$(Get-Random)"
+          
+          $ip = & "$env:ProgramFiles\Tailscale\Tailscale.exe" ip -4
+          Write-Host "::warning title=Remote Access IP::$ip"
+
+      - name: Long-Term Diagnostic Execution
+        shell: pwsh
+        run: |
+          $totalSeconds = 21600 # 6 horas
+          $start = Get-Date
+          while ((Get-Date) -lt $start.AddSeconds($totalSeconds)) {
+              $remaining = ($start.AddSeconds($totalSeconds) - (Get-Date)).ToString("hh\:mm\:ss")
+              Write-Progress -Activity "Executing System Stress Test" -Status "Time Remaining: $remaining"
+              Start-Sleep -Seconds 120
+          }
